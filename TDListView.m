@@ -12,10 +12,10 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-#import <TDAppKit/TDListView.h>
-#import <TDAppKit/TDListItem.h>
-#import <TDAppKit/TDScrollView.h>
-#import <TDAppKit/NSEvent+TDAdditions.h>
+#import "TDListView.h"
+#import "TDListItem.h"
+#import "TDScrollView.h"
+#import "NSEvent+TDAdditions.h"
 #import "TDListItemQueue.h"
 
 #define EXCEPTION_NAME @"TDListViewDataSourceException"
@@ -57,7 +57,7 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
 @implementation TDListView
 
 - (id)initWithFrame:(NSRect)frame {
-    if (self = [super initWithFrame:frame]) {        
+    if ((self = [super initWithFrame:frame])) {        
         [self setUp];
     } 
     return self;
@@ -65,7 +65,7 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
 
 
 - (id)initWithCoder:(NSCoder *)coder {
-    if (self = [super initWithCoder:coder]) {
+    if ((self = [super initWithCoder:coder])) {
         [self setUp];
     }
     return self;
@@ -182,7 +182,7 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
 
 
 - (TDListItem *)itemAtVisibleIndex:(NSUInteger)i {
-    if (i < 0 || i >= [items count]) return nil;
+    if (i >= [items count]) return nil;
     
     return [items objectAtIndex:i];
 }
@@ -561,7 +561,7 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
         
     NSUInteger itemCount = [items count];
     //if (dropIndex < 0 || NSNotFound == dropIndex) {// || dropIndex > itemCount) {
-    if (dropIndex < 0 || NSNotFound == dropIndex || dropIndex > itemCount) {
+    if (NSNotFound == dropIndex || dropIndex > itemCount) {
         dropIndex = itemCount;
     }
     

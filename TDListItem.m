@@ -12,7 +12,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-#import <TDAppKit/TDListItem.h>
+#import "TDListItem.h"
 
 @interface TDListItem ()
 @property (nonatomic, assign) NSUInteger index;
@@ -21,7 +21,7 @@
 @implementation TDListItem
 
 - (id)initWithFrame:(NSRect)frame reuseIdentifier:(NSString *)s {
-    if (self = [super initWithFrame:frame]) {
+    if ((self = [super initWithFrame:frame])) {
         self.reuseIdentifier = s;
     }
     return self;

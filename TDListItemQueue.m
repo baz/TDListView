@@ -13,7 +13,7 @@
 //  limitations under the License.
 
 #import "TDListItemQueue.h"
-#import <TDAppKit/TDListItem.h>
+#import "TDListItem.h"
 
 @interface TDListItemQueue ()
 @property (nonatomic, retain) NSMutableDictionary *dict;
@@ -22,7 +22,7 @@
 @implementation TDListItemQueue
 
 - (id)init {
-    if (self = [super init]) {
+    if ((self = [super init])) {
         self.dict = [NSMutableDictionary dictionary];
     }
     return self;
