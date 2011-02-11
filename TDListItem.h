@@ -30,4 +30,5 @@
 
 @property (nonatomic, copy) NSString *reuseIdentifier;
 @property (nonatomic, assign, getter=isSelected) BOOL selected;
+@property (nonatomic, assign, readonly) NSUInteger index;
 @end
