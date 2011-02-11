@@ -719,6 +719,7 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
             item.index = i;
             [item setFrame:NSMakeRect(x, y, w, h)];
             [item setHidden:NO];
+			[item setSelected:self.selectedItemIndex == i];
             [self addSubview:item];
             [items addObject:item];
             [unusedItems removeObject:item];

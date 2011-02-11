@@ -67,4 +67,5 @@
 
 @synthesize reuseIdentifier;
 @synthesize index;
+@synthesize selected;
 @end

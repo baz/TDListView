@@ -17,6 +17,10 @@
 @interface TDListItem : NSView {
     NSString *reuseIdentifier;
     NSUInteger index;
+	@private
+		NSString *reuseIdentifier;
+		NSUInteger index;
+		BOOL selected;
 }
 
 - (id)initWithFrame:(NSRect)frame reuseIdentifier:(NSString *)s;
@@ -26,4 +30,5 @@
 - (NSImage *)draggingImage;
 
 @property (nonatomic, copy) NSString *reuseIdentifier;
+@property (nonatomic, assign, getter=isSelected) BOOL selected;
 @end
