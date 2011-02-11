@@ -1,3 +1,4 @@
+//  vim: expandtab:ts=4:sw=4
 //  Copyright 2009 Todd Ditchendorf
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
