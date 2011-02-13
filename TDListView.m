@@ -24,7 +24,7 @@
 #define DRAG_RADIUS 22
 
 NSString *const TDListItemPboardType = @"TDListItemPboardType";
-static const CGFloat kRowMutationAnimationDuration = .5;
+static const CGFloat kRowMutationAnimationDuration = 0.5;
 
 typedef NSRect(^ListViewCalculateFrameBlock)(NSRect itemFrame, NSUInteger index);
 typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
@@ -309,92 +309,67 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 
 - (void)deleteRowsAtIndexesWithAnimation:(NSIndexSet *)indexSet {
-    if (suppressLayout) return;
-    suppressLayout = YES;
-
-    NSUInteger firstIndex = [indexSet firstIndex];
-    NSUInteger lastIndex = [indexSet lastIndex];
-    NSUInteger indexSetCount = [indexSet count];
-    NSUInteger i = 0;
-
-    // Shift existing item's indexes up
-    for (i=lastIndex; i<[self.items count]; i++) {
-        TDListItem *item = [self.items objectAtIndex:i];
-        item.index -= indexSetCount;
+    // Determine total shift extent of deleted items
+    BOOL respondsToExtentForItem = (delegate && [delegate respondsToSelector:@selector(listView:extentForItemAtIndex:)]);
+    CGFloat shiftExtent = 0;
+    NSUInteger index = [indexSet firstIndex];
+    while (index != NSNotFound) {
+        CGFloat extent = respondsToExtentForItem ? [delegate listView:self extentForItemAtIndex:index] : itemExtent;
+        shiftExtent += extent;
+        index = [indexSet indexGreaterThanIndex:index];
     }
 
-    // Shift selected index
-    if (self.selectedItemIndex) {
-        self.selectedItemIndex = self.selectedItemIndex - indexSetCount;
-    }
-
-    // Only perform animations if the last cell is visible
-    NSRect lastIndexItemFrame = [self frameForItemAtIndex:lastIndex];
-    if (![self isFrameVisible:lastIndexItemFrame]) {
-        [self unsuppressLayout];
-        return;
-    }
-
-    // Add items which are off-screen
-    NSRect viewportRect = [self visibleRect];
-    NSUInteger lastVisibleIndex = [self indexForItemAtPoint:NSMakePoint(0, viewportRect.origin.y + viewportRect.size.height)];
+    // Add items which are immediately off-screen by appending to the self.items property until there are enough items present to satisfy the shift extent
+    CGFloat offScreenExtent = 0;
     BOOL respondsToWillDisplay = (delegate && [delegate respondsToSelector:@selector(listView:willDisplayItem:atIndex:)]);
-    NSInteger count = [dataSource numberOfItemsInListView:self];
-    for (i=0; i<count; i++) {
-        TDListItem *item = nil;
-        if ([self.items count] > i) {
-            item = [self.items objectAtIndex:i];
+    NSUInteger lastOnScreenIndex = [[self.items lastObject] index];
+    NSUInteger offScreenIndex = lastOnScreenIndex + 1;
+    NSInteger totalCount = [dataSource numberOfItemsInListView:self];
+    while ((offScreenExtent < shiftExtent) && (totalCount > offScreenIndex)) {
+        TDListItem *item = [dataSource listView:self itemAtIndex:offScreenIndex];
+        if (!item) {
+            [NSException raise:EXCEPTION_NAME format:@"nil list item view returned for index: %d by: %@", offScreenIndex, dataSource];
+        }
+        [self.items insertObject:item atIndex:offScreenIndex];
+        [self addSubview:item];
+
+        if (respondsToWillDisplay) {
+            [delegate listView:self willDisplayItem:item atIndex:offScreenIndex];
         }
 
-        if (i >= lastVisibleIndex && i < lastVisibleIndex + indexSetCount) {
-            item = [dataSource listView:self itemAtIndex:i];
-            if (!item) {
-                [NSException raise:EXCEPTION_NAME format:@"nil list item view returned for index: %d by: %@", i, dataSource];
-            }
-            [self.items insertObject:item atIndex:i];
-            [self addSubview:item];
-
-            if (respondsToWillDisplay) {
-                [delegate listView:self willDisplayItem:item atIndex:i];
-            }
-        }
-
-        item.index = i;
-        NSRect frame = [self frameForItemAtIndex:i];
+        item.index = offScreenIndex;
+        NSRect frame = [self frameForItemAtIndex:offScreenIndex];
         [item setFrame:frame];
         [item setHidden:NO];
         [item setSelected:NO];
+
+        offScreenIndex++;
     }
 
+    // Animate items upwards and close in on the gaps left by the deleted items
     [NSAnimationContext beginGrouping];
     [[NSAnimationContext currentContext] setDuration:kRowMutationAnimationDuration];
-
-    // Shift existing cells up
-    NSRect firstIndexItemFrame = [self frameForItemAtIndex:firstIndex];
-    CGFloat totalShiftExtent = [self extentForItemsInIndexSet:indexSet];
-    for (i=0; i<[self.items count]; i++) {
-        TDListItem *item = [self.items objectAtIndex:i];
-        if (i >= firstIndex && i <= lastIndex) {
-            // Fade out deleted rows
+    NSUInteger numPriorDeletedItems = 0;
+    NSRect previousNonDeletedItemFrame = [[self.items objectAtIndex:0] frame];
+    for (TDListItem *item in self.items) {
+        // Remove deleted items
+        if ([indexSet containsIndex:item.index]) {
+            // Move deleted items up to the last non-deleted item
+            [[item animator] setFrame:previousNonDeletedItemFrame];
             [[item animator] setAlphaValue:0];
-            [[item animator] setFrame:firstIndexItemFrame];
-        } else if (i > lastIndex) {
-            // Move rest of list up
-            CGFloat xOrigin = item.frame.origin.x;
-            CGFloat yOrigin = item.frame.origin.y;
-            if (self.isPortrait) {
-                yOrigin -= totalShiftExtent;
-            } else {
-                xOrigin -= totalShiftExtent;
-            }
-            NSRect shiftedFrame = NSMakeRect(xOrigin, yOrigin, item.frame.size.width, item.frame.size.height);
-            [[item animator] setFrame:shiftedFrame];
+            numPriorDeletedItems++;
+        } else {
+            item.index -= numPriorDeletedItems;
+            // Position items where they are supposed to go
+            NSRect frame = [self frameForItemAtIndex:item.index];
+            [[item animator] setFrame:frame];
+            [item setAlphaValue:1.0];
+            previousNonDeletedItemFrame = frame;
         }
     }
-
     [NSAnimationContext endGrouping];
 
-    [self performSelector:@selector(unsuppressLayout) withObject:nil afterDelay:kRowMutationAnimationDuration];
+    [self performSelector:@selector(layoutItems) withObject:nil afterDelay:kRowMutationAnimationDuration];
 }
 
 
