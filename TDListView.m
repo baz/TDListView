@@ -24,6 +24,10 @@
 #define DRAG_RADIUS 22
 
 NSString *const TDListItemPboardType = @"TDListItemPboardType";
+static const CGFloat kRowMutationAnimationDuration = .5;
+
+typedef NSRect(^ListViewCalculateFrameBlock)(NSRect itemFrame, NSUInteger index);
+typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 @interface NSToolbarPoofAnimator
 + (void)runPoofAtPoint:(NSPoint)p;
@@ -46,6 +50,10 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
 - (void)handleRightClickEvent:(NSEvent *)evt;
 - (void)displayContextMenu:(NSTimer *)t;
 - (void)handleDoubleClickAtIndex:(NSUInteger)i;
+- (BOOL)isFrameVisible:(NSRect)frame;
+- (CGFloat)extentForItemsInIndexSet:(NSIndexSet *)indexSet;
+- (void)updateFrameWithExtent:(NSNumber *)extentNumber;
+- (CGFloat)layoutItemsWithCalculateFrameBlock:(ListViewCalculateFrameBlock)calculateFrameBlock visibleItemBlock:(ListViewVisibleItemBlock)visibleItemBlock;
 
 @property (nonatomic, retain) NSMutableArray *items;
 @property (nonatomic, retain) NSMutableArray *unusedItems;
@@ -241,6 +249,152 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
 
 - (BOOL)isLandscape {
     return TDListViewOrientationLandscape == orientation;
+}
+
+
+- (void)insertRowsAtIndexesWithAnimation:(NSIndexSet *)indexSet {
+    // Place all cells in their original positions.
+    // Then perform a second pass to animate the new cells in and shift the old cells down.
+    __block CGFloat shiftExtent = 0;
+    ListViewCalculateFrameBlock calculateFrameBlock = ^ NSRect (NSRect itemFrame, NSUInteger index) {
+        BOOL isNewlyInserted = [indexSet containsIndex:index];
+        if (isNewlyInserted) {
+            // Running total of how much we have shifted everything else down
+            shiftExtent += itemFrame.size.height;
+        }
+
+        NSRect newFrame;
+        if (self.isPortrait) {
+            newFrame = NSMakeRect(itemFrame.origin.x, itemFrame.origin.y - shiftExtent, itemFrame.size.width, itemFrame.size.height);
+        } else {
+            newFrame = NSMakeRect(itemFrame.origin.x - shiftExtent, itemFrame.origin.y, itemFrame.size.width, itemFrame.size.height);
+        }
+
+        return newFrame;
+    };
+
+    __block BOOL firstItemVisible = NO;
+    ListViewVisibleItemBlock visibleItemBlock = ^(TDListItem *item, NSUInteger index) {
+        BOOL isNewlyInserted = [indexSet containsIndex:index];
+        if (isNewlyInserted) {
+            [item setAlphaValue:0.0];
+
+            if (!firstItemVisible) {
+                firstItemVisible = [indexSet firstIndex] == index;
+            }
+        }
+    };
+
+    CGFloat extent = [self layoutItemsWithCalculateFrameBlock:calculateFrameBlock visibleItemBlock:visibleItemBlock];
+
+    if (firstItemVisible) {
+        [NSAnimationContext beginGrouping];
+        [[NSAnimationContext currentContext] setDuration:kRowMutationAnimationDuration];
+        // Second pass animating everything into place
+        for (int i=0; i<[self.items count]; i++) {
+            TDListItem *item = [self.items objectAtIndex:i];
+            NSRect frame = [self frameForItemAtIndex:i];
+            if (!NSEqualRects(item.frame, frame)) {
+                [[item animator] setFrame:frame];
+                [[item animator] setAlphaValue:1.0];
+            }
+        }
+        [NSAnimationContext endGrouping];
+    }
+
+    if (extent) {
+        [self performSelector:@selector(updateFrameWithExtent:) withObject:[NSNumber numberWithFloat:extent] afterDelay:kRowMutationAnimationDuration];
+    }
+}
+
+
+- (void)deleteRowsAtIndexesWithAnimation:(NSIndexSet *)indexSet {
+    if (suppressLayout) return;
+    suppressLayout = YES;
+
+    NSUInteger firstIndex = [indexSet firstIndex];
+    NSUInteger lastIndex = [indexSet lastIndex];
+    NSUInteger indexSetCount = [indexSet count];
+    NSUInteger i = 0;
+
+    // Shift existing item's indexes up
+    for (i=lastIndex; i<[self.items count]; i++) {
+        TDListItem *item = [self.items objectAtIndex:i];
+        item.index -= indexSetCount;
+    }
+
+    // Shift selected index
+    if (self.selectedItemIndex) {
+        self.selectedItemIndex = self.selectedItemIndex - indexSetCount;
+    }
+
+    // Only perform animations if the last cell is visible
+    NSRect lastIndexItemFrame = [self frameForItemAtIndex:lastIndex];
+    if (![self isFrameVisible:lastIndexItemFrame]) {
+        [self unsuppressLayout];
+        return;
+    }
+
+    // Add items which are off-screen
+    NSRect viewportRect = [self visibleRect];
+    NSUInteger lastVisibleIndex = [self indexForItemAtPoint:NSMakePoint(0, viewportRect.origin.y + viewportRect.size.height)];
+    BOOL respondsToWillDisplay = (delegate && [delegate respondsToSelector:@selector(listView:willDisplayItem:atIndex:)]);
+    NSInteger count = [dataSource numberOfItemsInListView:self];
+    for (i=0; i<count; i++) {
+        TDListItem *item = nil;
+        if ([self.items count] > i) {
+            item = [self.items objectAtIndex:i];
+        }
+
+        if (i >= lastVisibleIndex && i < lastVisibleIndex + indexSetCount) {
+            item = [dataSource listView:self itemAtIndex:i];
+            if (!item) {
+                [NSException raise:EXCEPTION_NAME format:@"nil list item view returned for index: %d by: %@", i, dataSource];
+            }
+            [self.items insertObject:item atIndex:i];
+            [self addSubview:item];
+
+            if (respondsToWillDisplay) {
+                [delegate listView:self willDisplayItem:item atIndex:i];
+            }
+        }
+
+        item.index = i;
+        NSRect frame = [self frameForItemAtIndex:i];
+        [item setFrame:frame];
+        [item setHidden:NO];
+        [item setSelected:NO];
+    }
+
+    [NSAnimationContext beginGrouping];
+    [[NSAnimationContext currentContext] setDuration:kRowMutationAnimationDuration];
+
+    // Shift existing cells up
+    NSRect firstIndexItemFrame = [self frameForItemAtIndex:firstIndex];
+    CGFloat totalShiftExtent = [self extentForItemsInIndexSet:indexSet];
+    for (i=0; i<[self.items count]; i++) {
+        TDListItem *item = [self.items objectAtIndex:i];
+        if (i >= firstIndex && i <= lastIndex) {
+            // Fade out deleted rows
+            [[item animator] setAlphaValue:0];
+            [[item animator] setFrame:firstIndexItemFrame];
+        } else if (i > lastIndex) {
+            // Move rest of list up
+            CGFloat xOrigin = item.frame.origin.x;
+            CGFloat yOrigin = item.frame.origin.y;
+            if (self.isPortrait) {
+                yOrigin -= totalShiftExtent;
+            } else {
+                xOrigin -= totalShiftExtent;
+            }
+            NSRect shiftedFrame = NSMakeRect(xOrigin, yOrigin, item.frame.size.width, item.frame.size.height);
+            [[item animator] setFrame:shiftedFrame];
+        }
+    }
+
+    [NSAnimationContext endGrouping];
+
+    [self performSelector:@selector(unsuppressLayout) withObject:nil afterDelay:kRowMutationAnimationDuration];
 }
 
 
@@ -667,20 +821,26 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
 - (void)layoutItems {
     if (suppressLayout) return;
     
+    CGFloat extent = [self layoutItemsWithCalculateFrameBlock:nil visibleItemBlock:nil];
+
+    if (extent) {
+        [self updateFrameWithExtent:[NSNumber numberWithFloat:extent]];
+    }
+}
+
+
+- (CGFloat)layoutItemsWithCalculateFrameBlock:(ListViewCalculateFrameBlock)calculateFrameBlock visibleItemBlock:(ListViewVisibleItemBlock)visibleItemBlock {
     if (!dataSource) {
-        return;
-        //[NSException raise:EXCEPTION_NAME format:@"TDListView must have a dataSource before doing layout"];
+        return 0;
     }
 
     for (TDListItem *item in items) {
         [queue enqueue:item];
         [unusedItems addObject:item];
-        //[item removeFromSuperview];
     }
     
     [items removeAllObjects];
     
-    NSRect viewportRect = [self visibleRect];
     NSRect bounds = [self bounds];
     BOOL isPortrait = self.isPortrait;
     
@@ -703,14 +863,13 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
             w = extent;
         }
         NSRect itemFrame = NSMakeRect(x, y, w, h);
+
+        if (calculateFrameBlock) {
+            itemFrame = calculateFrameBlock(itemFrame, i);
+        }
         
         // if the item is visible...
-        BOOL isItemVisible = NO;
-        if (displaysClippedItems) {
-            isItemVisible = NSIntersectsRect(viewportRect, itemFrame);
-        } else {
-            isItemVisible = NSContainsRect(viewportRect, itemFrame);
-        }
+        BOOL isItemVisible = [self isFrameVisible:itemFrame];
 
         if (isItemVisible) {
             TDListItem *item = [dataSource listView:self itemAtIndex:i];
@@ -718,12 +877,17 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
                 [NSException raise:EXCEPTION_NAME format:@"nil list item view returned for index: %d by: %@", i, dataSource];
             }
             item.index = i;
-            [item setFrame:NSMakeRect(x, y, w, h)];
+            [item setFrame:itemFrame];
             [item setHidden:NO];
-			[item setSelected:self.selectedItemIndex == i];
+            [item setSelected:self.selectedItemIndex == i];
+            [item setAlphaValue:1.0];
             [self addSubview:item];
             [items addObject:item];
             [unusedItems removeObject:item];
+
+            if (visibleItemBlock) {
+                visibleItemBlock(item, i);
+            }
 
             if (respondsToWillDisplay) {
                 [delegate listView:self willDisplayItem:item atIndex:i];
@@ -742,24 +906,32 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
     }
 
     [unusedItems removeAllObjects];
-    
-    NSRect frame = [self frame];
-    if (isPortrait) {
-        if ([self autoresizingMask] & NSViewHeightSizable) {
-            y = y < viewportRect.size.height ? viewportRect.size.height : y;
-        }
-        frame.size.height = y;
-    } else {
-        if ([self autoresizingMask] & NSViewWidthSizable) {
-            x = x < viewportRect.size.width ? viewportRect.size.width : x;
-        }
-        frame.size.width = x;
-    }
-    
-    [self setFrame:frame];
+
+    // Return extent
+    return isPortrait ? y : x;
     
     //NSLog(@"%s my bounds: %@, viewport bounds: %@", _cmd, NSStringFromRect([self bounds]), NSStringFromRect([[self superview] bounds]));
     //NSLog(@"view count: %d, queue count: %d", [items count], [queue count]);
+}
+
+
+- (void)updateFrameWithExtent:(NSNumber *)extentNumber {
+    NSRect viewportRect = [self visibleRect];
+    NSRect frame = [self frame];
+    CGFloat extent = [extentNumber floatValue];
+    if (self.isPortrait) {
+        if ([self autoresizingMask] & NSViewHeightSizable) {
+            extent = extent < viewportRect.size.height ? viewportRect.size.height : extent;
+        }
+        frame.size.height = extent;
+    } else {
+        if ([self autoresizingMask] & NSViewWidthSizable) {
+            extent = extent < viewportRect.size.width ? viewportRect.size.width : extent;
+        }
+        frame.size.width = extent;
+    }
+    
+    [self setFrame:frame];
 }
 
 
@@ -863,6 +1035,32 @@ NSString *const TDListItemPboardType = @"TDListItemPboardType";
     draggingIndex = NSNotFound;
     isDragSource = NO;
     self.lastMouseDownEvent = nil;
+}
+
+
+- (BOOL)isFrameVisible:(NSRect)frame {
+    BOOL visible = NO;
+    NSRect viewportRect = [self visibleRect];
+    if (displaysClippedItems) {
+        visible = NSIntersectsRect(viewportRect, frame);
+    } else {
+        visible = NSContainsRect(viewportRect, frame);
+    }
+
+    return visible;
+}
+
+
+- (CGFloat)extentForItemsInIndexSet:(NSIndexSet *)indexSet {
+    NSUInteger firstIndex = [indexSet firstIndex];
+    NSUInteger lastIndex = [indexSet lastIndex];
+    CGFloat totalShiftExtent = 0;
+    BOOL respondsToExtentForItem = (delegate && [delegate respondsToSelector:@selector(listView:extentForItemAtIndex:)]);
+    for (NSUInteger i=firstIndex; i<=lastIndex; i++) {
+        totalShiftExtent += respondsToExtentForItem ? [delegate listView:self extentForItemAtIndex:i] : itemExtent;
+    }
+
+    return totalShiftExtent;
 }
 
 @synthesize scrollView;

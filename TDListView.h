@@ -68,6 +68,8 @@ extern NSString *const TDListItemPboardType;
 - (NSUInteger)indexForItemAtPoint:(NSPoint)p;
 - (TDListItem *)itemAtIndex:(NSUInteger)i;
 - (NSRect)frameForItemAtIndex:(NSUInteger)index;
+- (void)insertRowsAtIndexesWithAnimation:(NSIndexSet *)indexSet;
+- (void)deleteRowsAtIndexesWithAnimation:(NSIndexSet *)indexSet;
 
 /* Drag and drop support */
 
