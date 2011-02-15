@@ -51,9 +51,11 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 - (void)displayContextMenu:(NSTimer *)t;
 - (void)handleDoubleClickAtIndex:(NSUInteger)i;
 - (BOOL)isFrameVisible:(NSRect)frame;
-- (CGFloat)extentForItemsInIndexSet:(NSIndexSet *)indexSet;
 - (void)updateFrameWithExtent:(NSNumber *)extentNumber;
 - (CGFloat)layoutItemsWithCalculateFrameBlock:(ListViewCalculateFrameBlock)calculateFrameBlock visibleItemBlock:(ListViewVisibleItemBlock)visibleItemBlock;
+- (CGFloat)totalExtentForRowsInIndexSet:(NSIndexSet *)indexSet;
+- (CGFloat)extentForRect:(NSRect)rect;
+- (void)appendItemsToFillExtentFromIndexSet:(NSIndexSet *)indexSet;
 
 @property (nonatomic, retain) NSMutableArray *items;
 @property (nonatomic, retain) NSMutableArray *unusedItems;
@@ -253,6 +255,9 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 
 - (void)insertRowsAtIndexesWithAnimation:(NSIndexSet *)indexSet {
+    // Add items which are immediately off-screen by appending to the self.items property until there are enough items present to satisfy the shift extent
+    [self appendItemsToFillExtentFromIndexSet:indexSet];
+
     // Place all cells in their original positions.
     // Then perform a second pass to animate the new cells in and shift the old cells down.
     __block CGFloat shiftExtent = 0;
@@ -309,42 +314,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 
 - (void)deleteRowsAtIndexesWithAnimation:(NSIndexSet *)indexSet {
-    // Determine total shift extent of deleted items
-    BOOL respondsToExtentForItem = (delegate && [delegate respondsToSelector:@selector(listView:extentForItemAtIndex:)]);
-    CGFloat shiftExtent = 0;
-    NSUInteger index = [indexSet firstIndex];
-    while (index != NSNotFound) {
-        CGFloat extent = respondsToExtentForItem ? [delegate listView:self extentForItemAtIndex:index] : itemExtent;
-        shiftExtent += extent;
-        index = [indexSet indexGreaterThanIndex:index];
-    }
-
     // Add items which are immediately off-screen by appending to the self.items property until there are enough items present to satisfy the shift extent
-    CGFloat offScreenExtent = 0;
-    BOOL respondsToWillDisplay = (delegate && [delegate respondsToSelector:@selector(listView:willDisplayItem:atIndex:)]);
-    NSUInteger lastOnScreenIndex = [[self.items lastObject] index];
-    NSUInteger offScreenIndex = lastOnScreenIndex + 1;
-    NSInteger totalCount = [dataSource numberOfItemsInListView:self];
-    while ((offScreenExtent < shiftExtent) && (totalCount > offScreenIndex)) {
-        TDListItem *item = [dataSource listView:self itemAtIndex:offScreenIndex];
-        if (!item) {
-            [NSException raise:EXCEPTION_NAME format:@"nil list item view returned for index: %d by: %@", offScreenIndex, dataSource];
-        }
-        [self.items insertObject:item atIndex:offScreenIndex];
-        [self addSubview:item];
-
-        if (respondsToWillDisplay) {
-            [delegate listView:self willDisplayItem:item atIndex:offScreenIndex];
-        }
-
-        item.index = offScreenIndex;
-        NSRect frame = [self frameForItemAtIndex:offScreenIndex];
-        [item setFrame:frame];
-        [item setHidden:NO];
-        [item setSelected:NO];
-
-        offScreenIndex++;
-    }
+    [self appendItemsToFillExtentFromIndexSet:indexSet];
 
     // Animate items upwards and close in on the gaps left by the deleted items
     [NSAnimationContext beginGrouping];
@@ -1026,16 +997,62 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 }
 
 
-- (CGFloat)extentForItemsInIndexSet:(NSIndexSet *)indexSet {
-    NSUInteger firstIndex = [indexSet firstIndex];
-    NSUInteger lastIndex = [indexSet lastIndex];
-    CGFloat totalShiftExtent = 0;
+- (CGFloat)totalExtentForRowsInIndexSet:(NSIndexSet *)indexSet {
     BOOL respondsToExtentForItem = (delegate && [delegate respondsToSelector:@selector(listView:extentForItemAtIndex:)]);
-    for (NSUInteger i=firstIndex; i<=lastIndex; i++) {
-        totalShiftExtent += respondsToExtentForItem ? [delegate listView:self extentForItemAtIndex:i] : itemExtent;
+    CGFloat totalExtent = 0;
+    NSUInteger index = [indexSet firstIndex];
+    while (index != NSNotFound) {
+        CGFloat extent = respondsToExtentForItem ? [delegate listView:self extentForItemAtIndex:index] : itemExtent;
+        totalExtent += extent;
+        index = [indexSet indexGreaterThanIndex:index];
     }
 
-    return totalShiftExtent;
+    return totalExtent;
+}
+
+
+- (CGFloat)extentForRect:(NSRect)rect {
+    CGFloat extent = 0;
+    if (self.isPortrait) {
+        extent = rect.size.height;
+    } else {
+        extent = rect.size.width;
+    }
+
+    return extent;
+}
+
+
+- (void)appendItemsToFillExtentFromIndexSet:(NSIndexSet *)indexSet {
+    // Determine total shift extent of items
+    CGFloat extent = [self totalExtentForRowsInIndexSet:indexSet];
+
+    CGFloat offScreenExtent = 0;
+    BOOL respondsToWillDisplay = (delegate && [delegate respondsToSelector:@selector(listView:willDisplayItem:atIndex:)]);
+    NSUInteger lastOnScreenIndex = [[self.items lastObject] index];
+    NSUInteger offScreenIndex = lastOnScreenIndex + 1;
+    NSInteger totalCount = [dataSource numberOfItemsInListView:self];
+    while ((offScreenExtent < extent) && (totalCount > offScreenIndex)) {
+        TDListItem *item = [dataSource listView:self itemAtIndex:offScreenIndex - [indexSet count]];
+        if (!item) {
+            [NSException raise:EXCEPTION_NAME format:@"nil list item view returned for index: %d by: %@", offScreenIndex, dataSource];
+        }
+        [self.items insertObject:item atIndex:offScreenIndex];
+        [self addSubview:item];
+
+        if (respondsToWillDisplay) {
+            [delegate listView:self willDisplayItem:item atIndex:offScreenIndex];
+        }
+
+        item.index = offScreenIndex;
+        NSRect frame = [self frameForItemAtIndex:offScreenIndex];
+        [item setFrame:frame];
+        [item setHidden:NO];
+        [item setSelected:NO];
+
+        offScreenExtent += [self extentForRect:item.frame];
+        offScreenIndex++;
+    }
 }
 
 @synthesize scrollView;
