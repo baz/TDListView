@@ -718,9 +718,9 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     
     //NSLog(@"over: %@. Drop %@ : %d", item, dropOp == TDListViewDropOn ? @"On" : @"Before", dropIndex);
 
-    //if (isDraggingListItem) {
+    if (dragOp != NSDragOperationNone) {
         [self layoutItemsWhileDragging];
-    //}
+    }
     
     return dragOp;
 }
