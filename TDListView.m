@@ -113,7 +113,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     self.items = [NSMutableArray array];
     self.unusedItems = [NSMutableArray array];
     
-    self.selectedItemIndex = NSNotFound;
+    self.selectedIndexes = [NSMutableIndexSet indexSet];
     self.backgroundColor = [NSColor whiteColor];
     self.itemExtent = DEFAULT_ITEM_EXTENT;
     
@@ -221,26 +221,6 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     }
     NSRect r = NSMakeRect(x, y, w, h);
     return r;
-}
-
-
-- (void)setSelectedItemIndex:(NSInteger)i {
-    if (i != selectedItemIndex) {
-        if (NSNotFound != i) { // dont consult delegate if we are deselecting
-            if (delegate && [delegate respondsToSelector:@selector(listView:willSelectItemAtIndex:)]) {
-                if (NSNotFound == [delegate listView:self willSelectItemAtIndex:i]) {
-                    return;
-                }
-            }
-        }
-        
-        selectedItemIndex = i;
-        [self reloadData];
-        
-        if (selectedItemIndex != NSNotFound && delegate && [delegate respondsToSelector:@selector(listView:didSelectItemAtIndex:)]) {
-            [delegate listView:self didSelectItemAtIndex:i];
-        }
-    }
 }
 
 
@@ -394,11 +374,72 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 }
 
 
+- (void)selectItemAtIndex:(NSUInteger)index cumulative:(BOOL)isCumulative {
+    if (NSNotFound != index) {
+        if (delegate && [delegate respondsToSelector:@selector(listView:willSelectItemAtIndex:)]) {
+            if (NSNotFound == [delegate listView:self willSelectItemAtIndex:index]) {
+                return;
+            }
+        }
+
+        if ([self.selectedIndexes containsIndex:index] && [self.selectedIndexes count] > 1) {
+            // multiple selected and then a single item is clicked
+            [self.selectedIndexes removeAllIndexes];
+            [self.selectedIndexes addIndex:index];
+        } else if ([self.selectedIndexes containsIndex:index]) {
+            [self.selectedIndexes removeIndex:index];
+        } else {
+            if (!isCumulative) {
+                [self.selectedIndexes removeAllIndexes];
+            }
+            [self.selectedIndexes addIndex:index];
+        }
+
+        if ([self.selectedIndexes count] && delegate && [delegate respondsToSelector:@selector(listView:didSelectItemsAtIndexes:)]) {
+            [delegate listView:self didSelectItemsAtIndexes:self.selectedIndexes];
+        }
+    } else {
+        // empty area was clicked so deselect all
+        [self.selectedIndexes removeAllIndexes];
+    }
+
+    [self reloadData];
+}
+
+
+- (void)selectItemsInRange:(NSRange)range {
+    [self.selectedIndexes removeAllIndexes];
+    for (int i=range.location; i<=range.location + range.length; i++) {
+        if (delegate && [delegate respondsToSelector:@selector(listView:willSelectItemAtIndex:)]) {
+            if (NSNotFound == [delegate listView:self willSelectItemAtIndex:i]) {
+                continue;
+            }
+        }
+        [self selectItemAtIndex:i cumulative:YES];
+    }
+
+    [self reloadData];
+}
+
+
+- (void)clearAllSelections {
+    [self.selectedIndexes removeAllIndexes];
+    [self reloadData];
+}
+
+
 #pragma mark -
 #pragma mark NSResponder
 
 - (void)rightMouseUp:(NSEvent *)evt {
     [self handleRightClickEvent:evt];
+}
+
+
+- (NSUInteger)indexForItemFromEvent:(NSEvent *)event {
+    NSPoint locInWin = [event locationInWindow];
+    NSPoint p = [self convertPoint:locInWin fromView:nil];
+    return [self indexForItemAtPoint:p];
 }
 
 
@@ -416,13 +457,32 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
         [self handleDoubleClickAtIndex:i];
         return;
     }
-    
+
     BOOL isCopy = [evt isOptionKeyPressed] && (NSDragOperationCopy & [self draggingSourceOperationMaskForLocal:YES]);
-    self.lastMouseDownEvent = evt;
-    
-    if (NSNotFound != i) {
-        self.selectedItemIndex = i;
+
+    // handle item selection
+    if ([evt isShiftKeyPressed]) {
+        // range selected
+        NSUInteger lastEventIndex = [self indexForItemFromEvent:self.lastMouseDownEvent];
+        NSUInteger location = lastEventIndex < i ? lastEventIndex : i;
+        NSUInteger lastIndex = [self.items indexOfObject:[self.items lastObject]];
+        if (lastEventIndex == NSNotFound) {
+            lastEventIndex = lastIndex;
+        }
+        NSUInteger destination;
+        if (i == NSNotFound) {
+            destination = lastIndex;
+        } else {
+            destination = location == lastEventIndex ? i : lastEventIndex;
+        }
+
+        NSRange range = {location, destination - location};
+        [self selectItemsInRange:range];
+    } else {
+        [self selectItemAtIndex:i cumulative:[evt isCommandKeyPressed]];
     }
+
+    self.lastMouseDownEvent = evt;
     
     // this adds support for click-to-select-and-drag all in one click. 
     // otherwise you have to click once to select and then click again to begin a drag, which sux.
@@ -523,9 +583,9 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
         dragImg = [self draggingImageForItemAtIndex:draggingIndex withEvent:evt offset:&dragOffset];
     }
  
-    BOOL canDrag = YES;
+    BOOL canDrag = NO;
     BOOL slideBack = YES;
-    if (delegate && [delegate respondsToSelector:@selector(listView:canDragItemAtIndex:withEvent:slideBack:)]) {
+    if (draggingIndex != NSNotFound && delegate && [delegate respondsToSelector:@selector(listView:canDragItemAtIndex:withEvent:slideBack:)]) {
         canDrag = [delegate listView:self canDragItemAtIndex:draggingIndex withEvent:evt slideBack:&slideBack];
     }
     if (!canDrag) return;
@@ -539,7 +599,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     }
     if (!canDrag) return;
     
-    self.selectedItemIndex = NSNotFound;
+    [self.selectedIndexes removeAllIndexes];
     
     NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
     
@@ -825,7 +885,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
             item.index = i;
             [item setFrame:itemFrame];
             [item setHidden:NO];
-            [item setSelected:self.selectedItemIndex == i];
+            [item setSelected:[self.selectedIndexes containsIndex:i]];
             [item setAlphaValue:1.0];
             [self addSubview:item];
             [items addObject:item];
@@ -980,7 +1040,6 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     draggingVisibleIndex = NSNotFound;
     draggingIndex = NSNotFound;
     isDragSource = NO;
-    self.lastMouseDownEvent = nil;
 }
 
 
@@ -1061,7 +1120,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 @synthesize backgroundColor;
 @synthesize itemExtent;
 @synthesize itemMargin;
-@synthesize selectedItemIndex;
+@synthesize selectedIndexes;
 @synthesize orientation;
 @synthesize items;
 @synthesize unusedItems;
