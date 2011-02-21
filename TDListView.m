@@ -100,6 +100,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     self.queue = nil;
     self.lastMouseDownEvent = nil;
     self.itemFrames = nil;
+    self.selectedIndexes = nil;
     [super dealloc];
 }
 
