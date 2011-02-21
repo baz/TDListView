@@ -662,7 +662,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     if (!NSPointInRect(endPointInWin, dropZone)) {
         if (delegate && [delegate respondsToSelector:@selector(listView:shouldRunPoofAt:forRemovedItemAtIndex:)]) {
             if ([delegate listView:self shouldRunPoofAt:endPointInScreen forRemovedItemAtIndex:draggingIndex]) {
-                [NSToolbarPoofAnimator runPoofAtPoint:endPointInScreen];
+                NSShowAnimationEffect(NSAnimationEffectPoof, endPointInScreen, NSZeroSize, nil, nil, nil);
             }
         }
     }
