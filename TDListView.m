@@ -29,10 +29,6 @@ static const CGFloat kRowMutationAnimationDuration = 0.5;
 typedef NSRect(^ListViewCalculateFrameBlock)(NSRect itemFrame, NSUInteger index);
 typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
-@interface NSToolbarPoofAnimator
-+ (void)runPoofAtPoint:(NSPoint)p;
-@end
-
 @interface TDListItem ()
 @property (nonatomic, assign) NSUInteger index;
 @end
@@ -44,6 +40,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 - (NSUInteger)indexForItemWhileDraggingAtPoint:(NSPoint)p;
 - (TDListItem *)itemAtVisibleIndex:(NSUInteger)i;
 - (NSUInteger)visibleIndexForItemAtPoint:(NSPoint)p;
+- (NSIndexSet *)visibleIndexesForItemIndexes:(NSIndexSet *)indexes;
 - (TDListItem *)itemWhileDraggingAtIndex:(NSInteger)i;
 - (void)draggingSourceDragDidEnd;
 - (void)unsuppressLayout;
@@ -63,6 +60,9 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 @property (nonatomic, retain) NSEvent *lastMouseDownEvent;
 @property (nonatomic, retain) NSMutableArray *itemFrames;
 @property (nonatomic, assign) NSPoint dragOffset;
+@property (nonatomic, retain) NSMutableIndexSet *selectedIndexes;
+@property (nonatomic, retain) NSIndexSet *draggingIndexes;
+@property (nonatomic, retain) NSIndexSet *draggingVisibleIndexes;
 @end
 
 @implementation TDListView
@@ -101,6 +101,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     self.lastMouseDownEvent = nil;
     self.itemFrames = nil;
     self.selectedIndexes = nil;
+    self.draggingIndexes = nil;
+    self.draggingVisibleIndexes = nil;
     [super dealloc];
 }
 
@@ -122,8 +124,6 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     
     self.displaysClippedItems = YES;
     
-    draggingVisibleIndex = NSNotFound;
-    draggingIndex = NSNotFound;
     [self setDraggingSourceOperationMask:NSDragOperationEvery forLocal:YES];
     [self setDraggingSourceOperationMask:NSDragOperationNone forLocal:NO];    
 }
@@ -142,18 +142,6 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     TDListItem *item = [queue dequeueWithIdentifier:s];
     [item prepareForReuse];
     return item;
-}
-
-
-- (NSUInteger)visibleIndexForItemAtPoint:(NSPoint)p {
-    NSUInteger i = 0;
-    for (TDListItem *item in items) {
-        if (NSPointInRect(p, [item frame])) {
-            return i;
-        }
-        i++;
-    }
-    return NSNotFound;
 }
 
 
@@ -403,8 +391,6 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
         // empty area was clicked so deselect all
         [self.selectedIndexes removeAllIndexes];
     }
-
-    [self reloadData];
 }
 
 
@@ -418,14 +404,11 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
         }
         [self selectItemAtIndex:i cumulative:YES];
     }
-
-    [self reloadData];
 }
 
 
 - (void)clearAllSelections {
     [self.selectedIndexes removeAllIndexes];
-    [self reloadData];
 }
 
 
@@ -444,11 +427,36 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 }
 
 
+- (NSUInteger)visibleIndexForItemAtPoint:(NSPoint)p {
+    NSUInteger i = 0;
+    for (TDListItem *item in items) {
+        if (NSPointInRect(p, [item frame])) {
+            return i;
+        }
+        i++;
+    }
+    return NSNotFound;
+}
+
+
+- (NSIndexSet *)visibleIndexesForItemIndexes:(NSIndexSet *)indexes {
+    NSMutableIndexSet *indexSet = [NSMutableIndexSet indexSet];
+    NSUInteger i = 0;
+    for (TDListItem *item in items) {
+        if ([indexes containsIndex:item.index]) {
+            [indexSet addIndex:i];
+        }
+        i++;
+    }
+
+    return indexSet;
+}
+
+
 - (void)mouseDown:(NSEvent *)evt {
     NSPoint locInWin = [evt locationInWindow];
     NSPoint p = [self convertPoint:locInWin fromView:nil];
     NSUInteger i = [self indexForItemAtPoint:p];
-    NSUInteger visibleIndex = [self visibleIndexForItemAtPoint:p];
 
     // handle right click
     if ([evt isControlKeyPressed] && 1 == [evt clickCount]) {
@@ -461,6 +469,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
     BOOL isCopy = [evt isOptionKeyPressed] && (NSDragOperationCopy & [self draggingSourceOperationMaskForLocal:YES]);
 
+    // take a copy of the selected indexes in case we are attempting to start a drag operation
+    NSMutableIndexSet *copiedSelectedIndexSet = [[self.selectedIndexes mutableCopy] autorelease];
     // handle item selection
     if ([evt isShiftKeyPressed]) {
         // range selected
@@ -491,18 +501,26 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
         
     NSInteger radius = DRAG_RADIUS;
     NSRect r = NSMakeRect(locInWin.x - radius, locInWin.y - radius, radius * 2, radius * 2);
-    
+
     while (withinDragRadius) {
         evt = [[self window] nextEventMatchingMask:NSLeftMouseUpMask|NSLeftMouseDraggedMask|NSPeriodicMask];
-        
         switch ([evt type]) {
             case NSLeftMouseDragged:
+                // this is a drag after all so place selection back
+                self.selectedIndexes = copiedSelectedIndexSet;
+
                 if (NSPointInRect([evt locationInWindow], r)) {
                     // still within drag radius tolerance. dont drag yet
                     break;
                 }
-                draggingIndex = i;
-                draggingVisibleIndex = isCopy ? NSNotFound : visibleIndex;
+
+                // drag can occur without selection
+                if (![self.selectedIndexes count]) {
+                    self.draggingIndexes = [NSIndexSet indexSetWithIndex:i];
+                } else {
+                    self.draggingIndexes = self.selectedIndexes;
+                }
+                self.draggingVisibleIndexes = isCopy ? nil : [self visibleIndexesForItemIndexes:self.draggingIndexes];
                 isDragSource = YES;
                 [self mouseDragged:evt];
                 withinDragRadius = NO;
@@ -516,6 +534,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
                 break;
         }
     }
+
+    [self reloadData];
 }
 
 
@@ -578,16 +598,16 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     // have to get the image before calling any delegate methods... they may rearrange or remove views which would cause us to have the wrong image
     self.dragOffset = NSZeroPoint;
     NSImage *dragImg = nil;
-    if (delegate && [delegate respondsToSelector:@selector(listView:draggingImageForItemAtIndex:withEvent:offset:)]) {
-        dragImg = [delegate listView:self draggingImageForItemAtIndex:draggingIndex withEvent:lastMouseDownEvent offset:&dragOffset];
+    if (delegate && [delegate respondsToSelector:@selector(listView:draggingImageForItemsAtIndexes:withEvent:offset:)]) {
+        dragImg = [delegate listView:self draggingImageForItemsAtIndexes:self.draggingIndexes withEvent:lastMouseDownEvent offset:&dragOffset];
     } else {
-        dragImg = [self draggingImageForItemAtIndex:draggingIndex withEvent:evt offset:&dragOffset];
+        dragImg = [self draggingImageForItemsAtIndexes:self.draggingIndexes withEvent:evt offset:&dragOffset];
     }
  
     BOOL canDrag = NO;
     BOOL slideBack = YES;
-    if (draggingIndex != NSNotFound && delegate && [delegate respondsToSelector:@selector(listView:canDragItemAtIndex:withEvent:slideBack:)]) {
-        canDrag = [delegate listView:self canDragItemAtIndex:draggingIndex withEvent:evt slideBack:&slideBack];
+    if (self.draggingIndexes && delegate && [delegate respondsToSelector:@selector(listView:canDragItemsAtIndexes:withEvent:slideBack:)]) {
+        canDrag = [delegate listView:self canDragItemsAtIndexes:self.draggingIndexes withEvent:evt slideBack:&slideBack];
     }
     if (!canDrag) return;
     
@@ -595,12 +615,10 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     [pboard declareTypes:[NSArray arrayWithObject:TDListItemPboardType] owner:self];
     
     canDrag = NO;
-    if (/*NSNotFound != draggingVisibleIndex && */delegate && [delegate respondsToSelector:@selector(listView:writeItemAtIndex:toPasteboard:)]) {
-        canDrag = [delegate listView:self writeItemAtIndex:draggingIndex toPasteboard:pboard];
+    if (delegate && [delegate respondsToSelector:@selector(listView:writeItemsAtIndexes:toPasteboard:)]) {
+        canDrag = [delegate listView:self writeItemsAtIndexes:self.draggingIndexes toPasteboard:pboard];
     }
     if (!canDrag) return;
-    
-    [self.selectedIndexes removeAllIndexes];
     
     NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
     
@@ -637,14 +655,47 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 }
 
 
-- (NSImage *)draggingImageForItemAtIndex:(NSInteger)i withEvent:(NSEvent *)evt offset:(NSPointPointer)dragImageOffset {
-    TDListItem *item = [self itemAtIndex:i];
+- (NSImage *)draggingImageForItemsAtIndexes:(NSIndexSet *)indexes withEvent:(NSEvent *)evt offset:(NSPointPointer)dragImageOffset {
+    // create an image combining all item drag images in the index set
+    NSUInteger firstIndex = [indexes firstIndex];
+    TDListItem *firstItem = [self itemAtIndex:firstIndex];
+    TDListItem *lastItem = [self itemAtIndex:[indexes lastIndex]];
+    NSSize imageSize = NSMakeSize(firstItem.frame.size.width, lastItem.frame.origin.y + lastItem.frame.size.height - firstItem.frame.origin.y);
+    NSImage *compositeImage = [[[NSImage alloc] initWithSize:imageSize] autorelease];
+    [[NSGraphicsContext currentContext] setImageInterpolation: NSImageInterpolationHigh];
+    [compositeImage lockFocus];
+
+    TDListItem *item = nil;
+    // drawing from the top to the bottom
+    NSPoint point = NSMakePoint(0, imageSize.height - firstItem.frame.size.height);
+    NSUInteger index = firstIndex;
+    CGFloat previousBottomLeft = 0;
+    CGFloat yDelta = 0;
+    while (index != NSNotFound) {
+        // origin of this item is flipped (top left), but we are not drawing into a flipped context
+        item = [self itemAtIndex:index];
+        NSImage *image = [item draggingImage];
+
+        if (previousBottomLeft) {
+            CGFloat currentBottomLeft = item.frame.origin.y + item.frame.size.height;
+            // distance on the y-axis between this item and the previous one
+            yDelta = currentBottomLeft - previousBottomLeft;
+        }
+
+        point = NSMakePoint(point.x, point.y - yDelta);
+        [image drawAtPoint:point fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
+
+        previousBottomLeft = item.frame.origin.y + item.frame.size.height;
+        index = [indexes indexGreaterThanIndex:index];
+    }
+    [compositeImage unlockFocus];
+
     if (dragImageOffset) {
-        NSPoint p = [item convertPoint:[evt locationInWindow] fromView:nil];
-        *dragImageOffset = NSMakePoint(p.x, p.y - NSHeight([item frame]));
+        NSPoint p = [firstItem convertPoint:[evt locationInWindow] fromView:nil];
+        *dragImageOffset = NSMakePoint(p.x, p.y - imageSize.height);
     }
 
-    return [item draggingImage];
+    return compositeImage;
 }
 
 
@@ -660,8 +711,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     NSRect dropZone = [self convertRect:[self visibleRect] toView:nil];
 
     if (!NSPointInRect(endPointInWin, dropZone)) {
-        if (delegate && [delegate respondsToSelector:@selector(listView:shouldRunPoofAt:forRemovedItemAtIndex:)]) {
-            if ([delegate listView:self shouldRunPoofAt:endPointInScreen forRemovedItemAtIndex:draggingIndex]) {
+        if (delegate && [delegate respondsToSelector:@selector(listView:shouldRunPoofAt:forRemovedItemsAtIndexes:)]) {
+            if ([delegate listView:self shouldRunPoofAt:endPointInScreen forRemovedItemsAtIndexes:self.draggingIndexes]) {
                 NSShowAnimationEffect(NSAnimationEffectPoof, endPointInScreen, NSZeroSize, nil, nil, nil);
             }
         }
@@ -678,17 +729,17 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 - (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)dragInfo {    
     delegateRespondsToValidateDrop = delegate && [delegate respondsToSelector:@selector(listView:validateDrop:proposedIndex:dropOperation:)];
-    
+
     if (!itemFrames) {
         self.itemFrames = [NSMutableArray arrayWithCapacity:[items count]];
         for (TDListItem *item in items) {
             [itemFrames addObject:[NSValue valueWithRect:[item frame]]];
         }
     }
-    
+
     NSPasteboard *pboard = [dragInfo draggingPasteboard];
     NSDragOperation srcMask = [dragInfo draggingSourceOperationMask];
-    
+
     if ([[pboard types] containsObject:TDListItemPboardType]) {
         BOOL optPressed = [[[dragInfo draggingDestinationWindow] currentEvent] isOptionKeyPressed];
         
@@ -698,7 +749,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
             return NSDragOperationMove;
         }
     }
-    
+
     return NSDragOperationNone;
 }
 
@@ -710,7 +761,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     }
     
     NSDragOperation dragOp = NSDragOperationNone;
-    BOOL isDraggingListItem = (draggingVisibleIndex != NSNotFound || [[[dragInfo draggingPasteboard] types] containsObject:TDListItemPboardType]);
+    BOOL isDraggingListItem = (self.draggingVisibleIndexes || [[[dragInfo draggingPasteboard] types] containsObject:TDListItemPboardType]);
     
     NSPoint locInWin = [dragInfo draggingLocation];
     NSPoint locInList = [self convertPoint:locInWin fromView:nil];
@@ -720,7 +771,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     } else {
         dropIndex = [self indexForItemAtPoint:locInList];
     }
-        
+
     NSUInteger itemCount = [items count];
     //if (dropIndex < 0 || NSNotFound == dropIndex) {// || dropIndex > itemCount) {
     if (NSNotFound == dropIndex || dropIndex > itemCount) {
@@ -771,7 +822,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
     }
     
     // if copying...
-    if (NSNotFound == draggingVisibleIndex && dropIndex > draggingIndex) {
+    if (!self.draggingVisibleIndexes && dropIndex > [self.draggingIndexes firstIndex]) {
         dropIndex++;
     }
 
@@ -796,7 +847,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 
 - (BOOL)performDragOperation:(id <NSDraggingInfo>)dragInfo {
-    if (dropIndex > draggingIndex) {
+    if (dropIndex > [self.draggingIndexes firstIndex]) {
 //        NSUInteger diff = dropIndex - draggingIndex;
 //        dropIndex -= diff;
 //        dropVisibleIndex -= diff;
@@ -943,12 +994,10 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 
 - (void)layoutItemsWhileDragging {
-    //if (NSNotFound == draggingIndex) return;
-    
     NSUInteger itemCount = [items count];
     TDListItem *item = nil;
     
-    TDListItem *draggingItem = [self itemAtVisibleIndex:draggingVisibleIndex];
+    TDListItem *draggingItem = [self itemAtVisibleIndex:[self.draggingVisibleIndexes firstIndex]];
     CGFloat draggingExtent = 0;
     if (draggingItem) {
         draggingExtent = self.isPortrait ? NSHeight([draggingItem frame]) : NSWidth([draggingItem frame]);
@@ -980,8 +1029,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
             frame.origin.x = extent;
         }
         
-        [item setHidden:i == draggingVisibleIndex];
-        
+        [item setHidden:[self.draggingVisibleIndexes containsIndex:i]];
+
         if (i >= dropVisibleIndex) {
             if (self.isPortrait) {
                 frame.origin.y += draggingExtent;
@@ -991,7 +1040,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
         }
         
         [[item animator] setFrame:frame];
-        if (i != draggingVisibleIndex) {
+        if (i != [self.draggingVisibleIndexes firstIndex]) {
             extent += self.isPortrait ? frame.size.height : frame.size.width;
         }
     }
@@ -1009,7 +1058,7 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
             
             NSRect r = [v rectValue];
             if (NSPointInRect(p, r)) {
-                if (i >= draggingVisibleIndex) {
+                if (i >= [self.draggingVisibleIndexes firstIndex]) {
                     return [[items objectAtIndex:i] index] + 1 - offset;
                 } else {
                     return [[items objectAtIndex:i] index] - offset;
@@ -1024,8 +1073,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 - (TDListItem *)itemWhileDraggingAtIndex:(NSInteger)i {
     TDListItem *item = [self itemAtIndex:i];
-    TDListItem *draggingItem = [self itemAtVisibleIndex:draggingVisibleIndex];
-                                
+    TDListItem *draggingItem = [self itemAtVisibleIndex:[self.draggingVisibleIndexes firstIndex]];
+
     if (item == draggingItem) {
         TDListItem *nextItem = [self itemAtVisibleIndex:i + 1];
         item = nextItem ? nextItem : item;
@@ -1038,8 +1087,6 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 
 
 - (void)draggingSourceDragDidEnd {
-    draggingVisibleIndex = NSNotFound;
-    draggingIndex = NSNotFound;
     isDragSource = NO;
 }
 
@@ -1122,6 +1169,8 @@ typedef void(^ListViewVisibleItemBlock)(TDListItem *item, NSUInteger index);
 @synthesize itemExtent;
 @synthesize itemMargin;
 @synthesize selectedIndexes;
+@synthesize draggingIndexes;
+@synthesize draggingVisibleIndexes;
 @synthesize orientation;
 @synthesize items;
 @synthesize unusedItems;
