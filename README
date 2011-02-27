@@ -1,0 +1,4 @@
+This is a fork iTod's TDListView from his TDAppKit project.
+You can find his project here: https://github.com/itod/fluidium.
+
+I've added multiple row selection, multiple drag and drop (in portrait mode) and animations when inserting and removing rows.
